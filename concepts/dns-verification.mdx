@@ -1,0 +1,146 @@
+---
+title: "How DNS TXT Record Verification Works"
+sidebarTitle: "DNS Verification"
+description: "Learn how DNS Handling proves domain ownership by generating a secure token and checking for it in a DNS TXT record before allowing certificate issuance."
+---
+
+DNS Handling proves that the caller controls a domain by requiring them to publish a specific token as a DNS TXT record. This approach — placing a secret value in DNS — is a widely-used ownership-proof mechanism because only someone with DNS write access to the zone can create or modify records. The service generates a unique, cryptographically unpredictable token at registration time and then, on demand, queries DNS to confirm the record is present before advancing the domain to `verified`.
+
+## How the verification token is generated
+
+Every domain registration generates a fresh token using `GenerateToken()` in `internal/domain/domain.go`:
+
+```go
+func GenerateToken() (string, error) {
+    b := make([]byte, 32)
+    if _, err := rand.Read(b); err != nil {
+        return "", fmt.Errorf("generate token: %w", err)
+    }
+    h := sha256.Sum256(b)
+    return hex.EncodeToString(h[:]), nil
+}
+```
+
+The function reads 32 bytes from `crypto/rand` (the operating-system CSPRNG), computes a SHA-256 digest of those bytes, and returns the result as a lowercase hexadecimal string. Because SHA-256 always produces a 32-byte digest, the token is always **64 hex characters** long. Every call to `GenerateToken()` produces a statistically unique value.
+
+## The challenge domain format
+
+The TXT record must be published at a specific subdomain derived from the registered domain name. The format is computed by `ChallengeDomain()`:
+
+```go
+func (s *Service) ChallengeDomain(domainName string) string {
+    return fmt.Sprintf("_acme-challenge.%s.", domainName)
+}
+```
+
+For a domain `example.com`, the challenge domain is:
+
+```text
+_acme-challenge.example.com.
+```
+
+The trailing dot is the DNS root label, which makes the name fully qualified and avoids ambiguity during lookup.
+
+## Setting up the DNS record
+
+After calling `POST /domains`, the response includes both the `verification_token` and an `instructions` string showing exactly what to publish:
+
+```json
+{
+  "id": "a3f1c2d4e5b6...",
+  "domain_name": "example.com",
+  "verification_token": "4a7f3c9b1e2d...",
+  "status": "pending",
+  "instructions": "Create a TXT record for _acme-challenge.example.com. with value: 4a7f3c9b1e2d..."
+}
+```
+
+Create the corresponding DNS record in your zone:
+
+```text
+_acme-challenge.example.com.  300  IN  TXT  "4a7f3c9b1e2d..."
+```
+
+The TTL value (`300` seconds in the example above) is at your discretion; a low TTL makes propagation faster.
+
+## What happens during POST /domains/{id}/verify
+
+Calling `POST /domains/{id}/verify` triggers the `VerifyDomain` handler, which performs the following steps in order:
+
+<Steps>
+  <Step title="Resolve the challenge domain">
+    The handler calls `dns.LookupTXT()` on `_acme-challenge.<domain>.` using Go's `net.DefaultResolver`. The DNS resolver is configured with a **10-second timeout** (set in `config.DNSTimeout`). If the lookup fails — for example because the record has not propagated yet — the handler returns HTTP 424 Failed Dependency.
+
+    ```go
+    records, err := h.dns.LookupTXT(r.Context(), challengeDomain)
+    ```
+  </Step>
+
+  <Step title="Strip surrounding quotes">
+    DNS TXT records are sometimes returned with surrounding double-quote characters depending on the resolver implementation. The `NetResolver` strips them before returning the slice:
+
+    ```go
+    for _, rec := range records {
+        filtered = append(filtered, strings.Trim(rec, `"`))
+    }
+    ```
+  </Step>
+
+  <Step title="Match against the stored token">
+    `domainSvc.VerifyTXT()` iterates over the returned records and performs an exact string comparison against the domain's `verification_token`. The first match is sufficient; additional TXT records at the same name are ignored.
+
+    ```go
+    if !contains(txtRecords, d.VerificationToken) {
+        return nil, fmt.Errorf("verification token not found in TXT records")
+    }
+    ```
+  </Step>
+
+  <Step title="Advance status to verified">
+    On a successful match, the domain's `status` is set to `"verified"`, `verified_at` is populated with the current UTC time, and `updated_at` is refreshed. The updated domain is persisted and returned in the HTTP response.
+
+    ```go
+    now := time.Now().UTC()
+    d.Status = StatusVerified
+    d.VerifiedAt = &now
+    d.UpdatedAt = now
+    ```
+  </Step>
+</Steps>
+
+## Example: complete verification flow
+
+```bash
+# 1. Register the domain
+curl -X POST http://localhost:8080/domains \
+  -H "Content-Type: application/json" \
+  -d '{"domain_name": "example.com"}'
+
+# Response includes verification_token, e.g. "4a7f3c9b1e2d..."
+
+# 2. Publish the TXT record in your DNS zone
+#    _acme-challenge.example.com.  300  IN  TXT  "4a7f3c9b1e2d..."
+
+# 3. Trigger verification once the record has propagated
+curl -X POST http://localhost:8080/domains/{id}/verify
+```
+
+A successful verification response looks like:
+
+```json
+{
+  "id": "a3f1c2d4e5b6...",
+  "domain_name": "example.com",
+  "status": "verified",
+  "verified_at": "2024-06-01T12:00:00Z",
+  "created_at": "2024-06-01T11:58:00Z"
+}
+```
+
+<Note>
+  The domain must be in `pending` status when `POST /domains/{id}/verify` is called. If the domain has already been verified, or is in any other status, `VerifyTXT()` returns an error and the handler responds with HTTP 400.
+</Note>
+
+<Tip>
+  DNS changes can take anywhere from a few seconds to several minutes to propagate globally, depending on upstream resolvers and TTL values. If the verification call returns a 424 error, wait a minute and retry. You can confirm propagation independently with `dig TXT _acme-challenge.example.com.` or an online DNS checker before calling the verify endpoint.
+</Tip>

@@ -1,0 +1,70 @@
+{
+  "projectType": "api-service",
+  "projectName": "DNS Handling",
+  "projectDescription": "A Go HTTP service that manages custom domain ownership verification and automated TLS certificate issuance via ACME DNS-01 challenges.",
+  "theme": "luma",
+  "primaryColor": "#3B6EF8",
+  "lightColor": "#EEF2FF",
+  "darkColor": "#1A2E6C",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart", "deployment"]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": ["concepts/domain-lifecycle", "concepts/dns-verification", "concepts/acme-dns01"]
+          },
+          {
+            "group": "Configuration",
+            "pages": ["configuration/environment-variables", "configuration/database"]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": ["api/overview"]
+          },
+          {
+            "group": "Domains",
+            "pages": [
+              "api/domains/create-domain",
+              "api/domains/get-domain",
+              "api/domains/verify-domain"
+            ]
+          },
+          {
+            "group": "Certificates",
+            "pages": [
+              "api/certificates/issue-certificate",
+              "api/certificates/get-certificate"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "DNS-based domain ownership verification via TXT records",
+    "Automated TLS certificate issuance using ACME DNS-01 protocol",
+    "Asynchronous certificate polling with configurable timeout",
+    "LibSQL (Turso) database backend with embedded migrations",
+    "Structured JSON logging with Zap",
+    "Container-ready with Containerfile for OCI image builds",
+    "Domain lifecycle state machine (pending → verified → certificate_pending → active / failed)"
+  ],
+  "publicApiSurface": [
+    "POST /domains — Create a domain and receive a verification token",
+    "GET /domains/{id} — Get domain status and metadata",
+    "POST /domains/{id}/verify — Trigger DNS TXT record verification",
+    "POST /domains/{id}/issue-certificate — Start ACME DNS-01 certificate order",
+    "GET /domains/{id}/certificate — Retrieve issued certificate metadata"
+  ]
+}

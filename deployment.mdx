@@ -1,0 +1,127 @@
+---
+title: "Deploy DNS Handling with Docker or Podman"
+sidebarTitle: "Deployment"
+description: "Build and run DNS Handling as a container with Docker or Podman, configure environment variables, and push images to GHCR with GitHub Actions."
+---
+
+DNS Handling ships a multi-stage `Containerfile` that produces a minimal Alpine-based image. You can build and run it with any OCI-compatible tool — Docker and Podman both work with the same commands. For teams that use GitHub Actions, a ready-made workflow builds with Buildah and pushes the image to the GitHub Container Registry on every push.
+
+## Building the container image
+
+From the repository root, build the image with Podman or Docker:
+
+```bash
+# Podman
+podman build -f Containerfile -t dns-handling:latest .
+
+# Docker
+docker build -f Containerfile -t dns-handling:latest .
+```
+
+The `Containerfile` used by the build is:
+
+```dockerfile
+FROM golang:1.26-alpine AS builder
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 go build -o /tls-server ./cmd/server
+
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata
+
+COPY --from=builder /tls-server /usr/local/bin/tls-server
+
+EXPOSE 8080
+
+ENTRYPOINT ["tls-server"]
+```
+
+The first stage downloads dependencies and compiles a statically-linked binary with `CGO_ENABLED=0`. The second stage copies only the compiled binary and the CA certificate bundle into a clean Alpine image, keeping the final image small and free of build tooling.
+
+<Note>
+  The binary inside the container is named **`tls-server`** and is installed at
+  `/usr/local/bin/tls-server`. The container's `ENTRYPOINT` invokes it directly,
+  so there is no shell wrapper between the process supervisor and the Go binary.
+</Note>
+
+## Running the container
+
+The service reads all configuration from environment variables. Pass them with one or more `-e` flags, or point to an env file with `--env-file`:
+
+```bash
+# Podman — inline environment variables
+podman run -d \
+  --name dns-handling \
+  -p 8080:8080 \
+  -e DATABASE_URL=file:./tls.db \
+  -e ACME_EMAIL=you@example.com \
+  -e ACME_DIRECTORY=https://acme-staging-v02.api.letsencrypt.org/directory \
+  -e SERVER_ADDR=:8080 \
+  -e LOG_LEVEL=info \
+  dns-handling:latest
+
+# Docker — env file
+docker run -d \
+  --name dns-handling \
+  -p 8080:8080 \
+  --env-file .env \
+  dns-handling:latest
+```
+
+The container exposes **port 8080**. Map it to any host port you need with `-p <host-port>:8080`.
+
+## Environment variables reference
+
+All variables are optional — the values below are the compiled-in defaults. Override only what differs in your environment.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DATABASE_URL` | `file:./tls.db` | LibSQL connection string. Use a file path for local dev or a Turso remote URL for production. |
+| `ACME_EMAIL` | `admin@example.com` | Email registered with the ACME provider; used for expiry notifications. |
+| `ACME_DIRECTORY` | `https://acme-staging-v02.api.letsencrypt.org/directory` | ACME directory endpoint. Change to the production URL when ready. |
+| `SERVER_ADDR` | `:8080` | `host:port` the HTTP server binds to. |
+| `LOG_LEVEL` | `info` | Set to `debug` for verbose development logging. |
+
+<Tip>
+  For production deployments, set `DATABASE_URL` to a **Turso remote URL**
+  (e.g. `libsql://your-db.turso.io?authToken=...`). This gives you durable,
+  replicated storage without managing a database server. The file-based default
+  (`file:./tls.db`) is convenient for local development but is ephemeral inside a
+  container unless you mount a persistent volume.
+</Tip>
+
+## GitHub Actions CI: build and push to GHCR
+
+The repository includes `.github/workflows/build.yaml`, which runs on every push and on manual dispatch. It builds the image with **Buildah**, logs in to the GitHub Container Registry, and pushes to:
+
+```
+ghcr.io/plutoploy/dns-handling
+```
+
+The image is tagged with three values simultaneously: `latest`, the full commit SHA (`github.sha`), and the branch or tag name (`github.ref_name`). After the push, the workflow generates a signed **build-provenance attestation** via `actions/attest-build-provenance`, which allows consumers to verify the image was built from a specific commit in the repository.
+
+To pull the latest image from GHCR:
+
+```bash
+podman pull ghcr.io/plutoploy/dns-handling:latest
+
+# or pin to a specific commit SHA for reproducible deployments
+podman pull ghcr.io/plutoploy/dns-handling:<commit-sha>
+```
+
+## Health check and readiness
+
+The service does not expose a dedicated health endpoint. Instead, treat the structured log line below as the readiness signal — it is emitted by the server goroutine immediately before it begins accepting connections:
+
+```json
+{"level":"info","msg":"listening","addr":":8080"}
+```
+
+In container orchestration environments (Kubernetes, Nomad, Fly.io) you can configure a TCP probe against port 8080, or scrape the logs and gate downstream traffic on the presence of the `"listening"` message.
+
+On shutdown (SIGINT or SIGTERM), the service emits `"shutting down..."`, drains in-flight requests with a 30-second grace period, and then logs `"stopped"` before the process exits.

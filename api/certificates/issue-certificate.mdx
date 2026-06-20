@@ -1,0 +1,94 @@
+---
+title: "POST /domains/{id}/issue-certificate — Start Certificate Issuance"
+sidebarTitle: "POST /{id}/issue-certificate"
+description: "Start ACME DNS-01 certificate issuance for a verified domain. Returns DNS challenge details immediately while certificate provisioning runs asynchronously."
+---
+
+Calling this endpoint begins the ACME DNS-01 certificate issuance process for a domain that has already been verified. The response is returned immediately with a DNS challenge that you must satisfy — the actual certificate is provisioned in the background while the service polls your DNS for the expected TXT record.
+
+## Endpoint
+
+```
+POST /domains/{id}/issue-certificate
+```
+
+## Path Parameters
+
+<ParamField path="id" type="string" required>
+  The unique identifier of the domain to issue a certificate for. The domain must currently have a status of `verified`. Domains in any other status — including `certificate_pending`, `active`, or `failed` — will be rejected.
+</ParamField>
+
+## Request Body
+
+No request body is required or accepted.
+
+## What Happens Internally
+
+When this endpoint is called, the following steps occur synchronously before the 202 response is returned:
+
+1. **ACME account setup** — The service checks the database for an existing ACME account. If one exists, its RSA-2048 private key is loaded. If not, a new RSA-2048 key pair is generated, a new account is registered with the ACME provider (e.g. Let's Encrypt), and the key and account KID are persisted to the database for reuse.
+2. **Order creation** — A new ACME order is placed for the domain name, and the DNS-01 authorization challenge is extracted from the order's first authorization.
+3. **Response preparation** — The `_acme-challenge.<domain>.` name and the required TXT value (the ACME key authorization digest) are returned to the caller.
+4. **Status transition** — The domain's status is updated to `certificate_pending` in the database.
+5. **Background polling starts** — A goroutine begins polling DNS every 10 seconds for up to 5 minutes, looking for the expected TXT record at the challenge domain.
+6. **Order completion** — Once the TXT record is detected, the service initiates the ACME challenge validation, polls for authorization, generates a fresh RSA-2048 certificate key, submits a CSR, finalizes the order, retrieves the certificate chain, and stores the certificate PEM and private key PEM in the database. The domain status is then updated to `active`.
+
+## Response — 202 Accepted
+
+<ResponseField name="order_id" type="string">
+  The internal identifier for this ACME order, stored in the database. Can be used to correlate logs or records if debugging certificate issuance.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Always `certificate_pending` for a successful call to this endpoint. Poll `GET /domains/{id}` to observe when the status transitions to `active` or `failed`.
+</ResponseField>
+
+<ResponseField name="challenge_domain" type="string">
+  The fully-qualified DNS name at which the TXT record must be set, for example `_acme-challenge.example.com.`. This follows the ACME DNS-01 specification and includes the trailing dot.
+</ResponseField>
+
+<ResponseField name="expected_txt_value" type="string">
+  The ACME key authorization value that must be set as the content of the TXT record at `challenge_domain`. This is a base64url-encoded SHA-256 digest and is distinct from the domain verification token used in earlier steps.
+</ResponseField>
+
+<ResponseField name="instructions" type="string">
+  A human-readable summary combining `challenge_domain` and `expected_txt_value`, suitable for display in a dashboard or CLI output.
+</ResponseField>
+
+### Example Request
+
+```bash
+curl -X POST https://api.example.com/domains/a3f1c2d4e5b6789012345678abcdef01/issue-certificate
+```
+
+### Example Response
+
+```json
+{
+  "order_id": "7b4e1f2a3c5d6e8f90a1b2c3d4e5f601",
+  "status": "certificate_pending",
+  "challenge_domain": "_acme-challenge.example.com.",
+  "expected_txt_value": "gfj9Xq3H1pZ2mKL8nYwRvTsUeOdAiCbF4D7hWxNk0IE",
+  "instructions": "Update the TXT record for _acme-challenge.example.com. to: gfj9Xq3H1pZ2mKL8nYwRvTsUeOdAiCbF4D7hWxNk0IE"
+}
+```
+
+<Warning>
+  You must update the DNS TXT record at `challenge_domain` with exactly the value in `expected_txt_value` before the background poller can complete issuance. This is a **different** record from the verification token set during domain ownership verification — the `expected_txt_value` here is derived from the ACME key authorization, not your domain's `verification_token`.
+</Warning>
+
+<Note>
+  The background poller runs for a maximum of **5 minutes**, checking every 10 seconds. If the TXT record containing `expected_txt_value` is not detected at `challenge_domain` within that window, the domain status transitions to `failed` and the certificate is not issued. DNS propagation delays vary by provider — set the record as soon as possible after receiving the 202 response.
+</Note>
+
+<Tip>
+  The ACME account (RSA-2048 key pair and KID) is persisted in the database after first use and reused for all subsequent certificate operations. A new account is only created if none exists. This means repeated calls to this endpoint — for example to re-issue a certificate before expiry — incur no additional ACME account registration overhead.
+</Tip>
+
+## Error Responses
+
+| Status | Condition |
+|---|---|
+| `404 Not Found` | No domain exists with the given `id`. |
+| `400 Bad Request` | The domain exists but its status is not `verified`. The error message includes the current status. |
+| `500 Internal Server Error` | ACME account setup failed (e.g. key generation or ACME provider registration error) or the ACME order could not be created. |

@@ -1,0 +1,86 @@
+---
+title: "GET /domains/{id} — Retrieve Domain Status"
+sidebarTitle: "GET /domains/{id}"
+description: "Fetch the current status and metadata for a registered custom domain, including verification timestamp once ownership has been confirmed."
+---
+
+Use this endpoint to inspect the current state of a domain at any point in its lifecycle — from initial registration through to an active TLS certificate. The response includes the domain's status, creation timestamp, and, once ownership has been verified, the exact time verification occurred. Poll this endpoint to track progress after triggering verification or certificate issuance.
+
+## Method and Path
+
+```
+GET /domains/{id}
+```
+
+## Path Parameters
+
+<ParamField path="id" type="string" required>
+  The unique domain identifier returned by `POST /domains` at registration time. This is a 32-character hex string derived from 16 random bytes.
+</ParamField>
+
+## Response — 200 OK
+
+<ResponseField name="id" type="string">
+  The unique identifier for this domain record, matching the `{id}` path parameter.
+</ResponseField>
+
+<ResponseField name="domain_name" type="string">
+  The fully-qualified domain name that was registered, e.g. `example.com`.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  The current lifecycle status of the domain. One of:
+
+  - `pending` — registered but ownership not yet confirmed
+  - `verified` — TXT record check passed; domain ownership is proven
+  - `certificate_pending` — a TLS certificate order has been placed with the ACME provider and is being processed
+  - `active` — a valid TLS certificate has been issued and stored
+  - `failed` — certificate issuance failed (e.g. ACME polling timed out)
+</ResponseField>
+
+<ResponseField name="verified_at" type="string">
+  RFC3339 timestamp recording when domain ownership was successfully verified. This field is **omitted** when `status` is `pending` and is present for all statuses at or beyond `verified`.
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+  RFC3339 timestamp recording when the domain was first registered with `POST /domains`.
+</ResponseField>
+
+## Examples
+
+### Pending Domain
+
+```bash
+curl https://api.example.com/domains/3f2a1b4c5d6e7f8a9b0c1d2e3f4a5b6c
+```
+
+```json
+{
+  "id": "3f2a1b4c5d6e7f8a9b0c1d2e3f4a5b6c",
+  "domain_name": "example.com",
+  "status": "pending",
+  "created_at": "2024-06-01T10:00:00Z"
+}
+```
+
+### Active Domain
+
+```bash
+curl https://api.example.com/domains/3f2a1b4c5d6e7f8a9b0c1d2e3f4a5b6c
+```
+
+```json
+{
+  "id": "3f2a1b4c5d6e7f8a9b0c1d2e3f4a5b6c",
+  "domain_name": "example.com",
+  "status": "active",
+  "verified_at": "2024-06-01T10:15:32Z",
+  "created_at": "2024-06-01T10:00:00Z"
+}
+```
+
+## Error Cases
+
+| Status | Cause |
+|--------|-------|
+| `404 Not Found` | No domain record exists for the supplied `{id}`. |

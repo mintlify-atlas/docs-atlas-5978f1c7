@@ -1,0 +1,183 @@
+---
+title: "ACME DNS-01 Certificate Issuance Flow"
+sidebarTitle: "ACME DNS-01"
+description: "Explore how DNS Handling implements RFC 8555 ACME DNS-01 challenges with the acmez library to automatically issue TLS certificates from Let's Encrypt."
+---
+
+DNS Handling implements the ACME protocol (RFC 8555) DNS-01 challenge type using the [`acmez`](https://github.com/mholt/acmez) library to automatically issue TLS certificates from Let's Encrypt or any compatible ACME certificate authority. The process is entirely asynchronous: the API returns immediately after starting an order and a background goroutine handles the polling, challenge completion, and certificate storage without blocking the caller.
+
+## Key data structures
+
+Two structs in `internal/acme/acme.go` represent the ACME state that is persisted to the database during issuance:
+
+```go
+type Order struct {
+    ID        string     `json:"id"`
+    DomainID  string     `json:"domain_id"`
+    OrderURL  string     `json:"order_url"`
+    Status    string     `json:"status"`
+    ExpiresAt *time.Time `json:"expires_at,omitempty"`
+    CreatedAt time.Time  `json:"created_at"`
+}
+
+type Challenge struct {
+    ID               string    `json:"id"`
+    DomainID         string    `json:"domain_id"`
+    AuthorizationURL string    `json:"authorization_url"`
+    ChallengeURL     string    `json:"challenge_url"`
+    Token            string    `json:"token"`
+    KeyAuthorization string    `json:"key_authorization"`
+    TXTValue         string    `json:"txt_value"`
+    Status           string    `json:"status"`
+    CreatedAt        time.Time `json:"created_at"`
+}
+```
+
+`Challenge.TXTValue` is the value that must appear in DNS — it is computed by `acmez` via `dnsChallenge.DNS01KeyAuthorization()` and is distinct from the domain ownership verification token used in the earlier `pending → verified` step.
+
+## Full issuance flow
+
+The entire flow is triggered by a single API call: `POST /domains/{id}/issue-certificate`. The domain must already be in `verified` status.
+
+<Steps>
+  <Step title="SetupAccount — resolve or create the ACME account">
+    The handler calls `acmeProv.SetupAccount()`. This method first checks the database for an existing ACME account record. If one exists, it decodes the stored PEM-encoded RSA private key and returns the key along with the saved Key ID (KID).
+
+    If no account exists, it generates a new **RSA-2048** account key, registers a new account with the ACME directory using the configured contact email address, and saves the resulting KID and PEM-encoded private key to the database so future calls reuse the same account.
+
+    ```go
+    accountKey, err := rsa.GenerateKey(rand.Reader, 2048)
+
+    acct := acme.Account{
+        Contact:              []string{"mailto:" + p.email},
+        TermsOfServiceAgreed: true,
+        PrivateKey:           accountKey,
+    }
+
+    createdAcct, err := p.client.NewAccount(ctx, acct)
+    ```
+  </Step>
+
+  <Step title="StartOrder — create the ACME order and extract the DNS-01 challenge">
+    `acmeProv.StartOrder()` creates a new ACME order identifying the target domain, fetches the first authorization object, and iterates over the authorization's challenges to find the one with `type == "dns-01"`.
+
+    The required DNS TXT value is then computed from the challenge token and the account key using `acmez`:
+
+    ```go
+    txtValue := dnsChallenge.DNS01KeyAuthorization()
+    ```
+
+    Both the `Order` and `Challenge` records are persisted to the database and returned to the handler.
+  </Step>
+
+  <Step title="Transition domain to certificate_pending">
+    Before launching the background goroutine, the handler calls `domainSvc.SetCertificatePending()`, which enforces that the domain is in `verified` status and then writes `status = "certificate_pending"` to the database.
+  </Step>
+
+  <Step title="Return immediately to the caller">
+    The handler responds with **HTTP 202 Accepted** before the certificate has been issued. The response body provides everything the caller needs to update their DNS record:
+
+    ```json
+    {
+      "order_id": "b2e4f1a3...",
+      "status": "certificate_pending",
+      "challenge_domain": "_acme-challenge.example.com.",
+      "expected_txt_value": "<acmez-computed-key-authorization>",
+      "instructions": "Update the TXT record for _acme-challenge.example.com. to: <acmez-computed-key-authorization>"
+    }
+    ```
+
+    The caller must update (or create) the TXT record at `challenge_domain` with `expected_txt_value` as soon as possible.
+  </Step>
+
+  <Step title="Background polling — wait for the TXT record to appear">
+    A goroutine launched with `go h.pollACME(...)` runs independently with its own context that carries a **5-minute timeout** (`config.PollTimeout`). Every **10 seconds** (`config.PollInterval`) it calls `dns.LookupTXT()` on `_acme-challenge.<domain>.` and checks whether any returned record matches `challenge.TXTValue`. DNS lookup errors during polling are logged at debug level and silently retried on the next tick.
+
+    ```go
+    ticker := time.NewTicker(h.pollInt)   // 10 seconds
+    // context timeout: h.pollTO           // 5 minutes
+
+    for _, rec := range records {
+        if rec == ch.TXTValue {
+            found = true
+            break
+        }
+    }
+    ```
+
+    If the context deadline is reached before the record appears, `domainSvc.SetFailed()` is called and the goroutine exits.
+  </Step>
+
+  <Step title="CompleteOrder — validate the challenge and finalize">
+    Once the expected TXT value is detected in DNS, the goroutine calls `acmeProv.CompleteOrder()`, which performs the remaining ACME protocol steps in sequence:
+
+    1. **InitiateChallenge** — notifies the ACME server that the DNS record is ready for validation.
+    2. **PollAuthorization** — waits for the ACME server to confirm the challenge is `valid`. If it fails, the order and challenge are marked `failed` in the database.
+    3. **Generate certificate key** — a new **RSA-2048** private key is created specifically for the certificate (separate from the account key).
+    4. **Create CSR** — a Certificate Signing Request is constructed for the domain name.
+    5. **FinalizeOrder** — submits the CSR to the ACME server to complete the order.
+    6. **GetCertificateChain** — downloads the issued certificate chain PEM from the ACME server.
+
+    ```go
+    certKey, err := rsa.GenerateKey(rand.Reader, 2048)
+
+    csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+        DNSNames: []string{acmeOrder.Identifiers[0].Value},
+    }, certKey)
+
+    acmeOrder, err = p.client.FinalizeOrder(ctx, acct, acmeOrder, csr)
+    certChains, err := p.client.GetCertificateChain(ctx, acct, acmeOrder.Certificate)
+    ```
+  </Step>
+
+  <Step title="Store certificate and mark domain active">
+    Back in the polling goroutine, `certSvc.Store()` persists the certificate PEM, private key PEM, `issued_at`, and `expires_at` timestamps to the database. Finally, `domainSvc.SetActive()` advances the domain to `status = "active"`. The certificate is then accessible via `GET /domains/{id}/certificate`.
+  </Step>
+</Steps>
+
+## Polling configuration
+
+Both timing values are hard-coded in `internal/config/config.go` and apply globally:
+
+| Parameter | Value | Description |
+|---|---|---|
+| `PollInterval` | 10 seconds | How often the background goroutine checks DNS |
+| `PollTimeout` | 5 minutes | Maximum wall-clock time before the goroutine gives up and sets `failed` |
+| `DNSTimeout` | 10 seconds | Per-query timeout applied to each individual DNS lookup |
+
+## Checking the result
+
+Because issuance is asynchronous, poll `GET /domains/{id}` to watch the status change:
+
+```bash
+# Poll until status is "active" or "failed"
+curl http://localhost:8080/domains/{id}
+```
+
+Once the status is `active`, retrieve the certificate metadata:
+
+```bash
+curl http://localhost:8080/domains/{id}/certificate
+```
+
+```json
+{
+  "id": "c3d5e7f1...",
+  "domain_id": "a3f1c2d4...",
+  "issued_at": "2024-06-01T12:05:00Z",
+  "expires_at": "2024-08-30T12:05:00Z",
+  "created_at": "2024-06-01T12:05:01Z"
+}
+```
+
+<Warning>
+  The `expected_txt_value` returned by `POST /domains/{id}/issue-certificate` is **not** the same as the `verification_token` used during domain ownership verification. The ACME DNS-01 TXT value is computed by `acmez` from the challenge token and the ACME account key (`DNS01KeyAuthorization()`), and will be a different string. You must update your DNS TXT record at `_acme-challenge.<domain>.` with this new value after calling the issue-certificate endpoint — leaving the old ownership-verification token in place will cause polling to time out and the domain to move to `failed`.
+</Warning>
+
+<Note>
+  The default ACME directory configured in `config.go` points to the **Let's Encrypt staging environment** (`https://acme-staging-v02.api.letsencrypt.org/directory`). Staging certificates are signed by a test CA and are not trusted by browsers. Set the `ACME_DIRECTORY` environment variable to `https://acme-v02.api.letsencrypt.org/directory` to use the Let's Encrypt production environment and obtain publicly trusted certificates. Note that the production environment enforces [rate limits](https://letsencrypt.org/docs/rate-limits/).
+</Note>
+
+<Tip>
+  Let's Encrypt certificates issued through the production ACME endpoint are valid for **90 days**. The `expires_at` field on the certificate record reflects this. Plan to automate renewal by re-triggering the issuance flow (starting from a freshly registered domain or by extending the service with a renewal path) before the certificate expires. A common practice is to renew at 60 days, leaving a 30-day buffer.
+</Tip>

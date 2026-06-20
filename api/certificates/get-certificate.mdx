@@ -1,0 +1,73 @@
+---
+title: "GET /domains/{id}/certificate — Retrieve Certificate Metadata"
+sidebarTitle: "GET /{id}/certificate"
+description: "Retrieve certificate metadata for an active domain, including issuance and expiry timestamps. Only available once the domain status has reached `active`."
+---
+
+This endpoint returns metadata about the TLS certificate that was issued for a domain after a successful ACME DNS-01 flow. Call it after polling `GET /domains/{id}` and confirming the domain status is `active` — the certificate record is created by the background issuance process and will not exist until that process completes successfully.
+
+## Endpoint
+
+```
+GET /domains/{id}/certificate
+```
+
+## Path Parameters
+
+<ParamField path="id" type="string" required>
+  The unique identifier of the domain whose certificate you want to retrieve. The domain must have a status of `active`. Domains in any other status will return a 404.
+</ParamField>
+
+## Response — 200 OK
+
+<ResponseField name="id" type="string">
+  The unique identifier for this certificate record in the database.
+</ResponseField>
+
+<ResponseField name="domain_id" type="string">
+  The identifier of the domain this certificate was issued for. Matches the `{id}` path parameter.
+</ResponseField>
+
+<ResponseField name="issued_at" type="string">
+  RFC3339 timestamp recording when the certificate was issued by the ACME provider. Set by the background issuance process at the moment the certificate chain was retrieved and stored.
+</ResponseField>
+
+<ResponseField name="expires_at" type="string">
+  RFC3339 timestamp recording when the certificate will expire. Let's Encrypt certificates are valid for approximately 90 days from issuance, so this will typically be `issued_at` plus 90 days.
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+  RFC3339 timestamp recording when the certificate database record was created. This will be equal to or slightly after `issued_at`.
+</ResponseField>
+
+### Example Request
+
+```bash
+curl https://api.example.com/domains/a3f1c2d4e5b6789012345678abcdef01/certificate
+```
+
+### Example Response
+
+```json
+{
+  "id": "c1d2e3f4a5b6789012345678cdef0102",
+  "domain_id": "a3f1c2d4e5b6789012345678abcdef01",
+  "issued_at": "2025-01-15T10:32:00Z",
+  "expires_at": "2025-04-15T10:32:00Z",
+  "created_at": "2025-01-15T10:32:01Z"
+}
+```
+
+<Note>
+  The certificate PEM and private key PEM are stored in the database but are **not** included in the API response — only metadata fields are returned. Retrieving the actual PEM material for use in a web server or load balancer requires direct database access to the `certificates` table.
+</Note>
+
+<Warning>
+  Let's Encrypt certificates expire **90 days** after issuance. Monitor the `expires_at` field and re-issue before it is reached by calling `POST /domains/{id}/issue-certificate` again. Note that the domain's status must be `verified` to start a new issuance — if the domain status has since changed (for example, it was set to `failed` during a prior attempt), it will need to be re-verified before a new certificate can be requested.
+</Warning>
+
+## Error Responses
+
+| Status | Condition |
+|---|---|
+| `404 Not Found` | No domain exists with the given `id`; the domain exists but its status is not `active`; or the domain is `active` but no certificate record was found in the database. |

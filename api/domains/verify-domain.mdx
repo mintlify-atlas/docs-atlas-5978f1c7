@@ -1,0 +1,90 @@
+---
+title: "POST /domains/{id}/verify — Verify Domain Ownership"
+sidebarTitle: "POST /domains/{id}/verify"
+description: "Trigger a DNS TXT record check to prove ownership of a registered domain and advance its status from pending to verified."
+---
+
+Call this endpoint after you have added the verification TXT record to your DNS provider. The service performs a live DNS lookup against `_acme-challenge.<domain>.` and checks that your domain's verification token is present in the results. If the check passes, the domain's status advances to `verified` and a `verified_at` timestamp is recorded — enabling the next step of requesting a TLS certificate via `POST /domains/{id}/issue-certificate`.
+
+## Method and Path
+
+```
+POST /domains/{id}/verify
+```
+
+## Path Parameters
+
+<ParamField path="id" type="string" required>
+  The unique domain identifier returned by `POST /domains` at registration time. This is a 32-character hex string derived from 16 random bytes.
+</ParamField>
+
+## Request Body
+
+No request body is required or accepted for this endpoint.
+
+## What Happens Internally
+
+When this endpoint is called the service performs the following steps in order:
+
+1. **Look up the domain record** — retrieves the domain by `{id}` and confirms it exists and is in `pending` status.
+2. **Resolve TXT records** — performs a live DNS lookup for TXT records at `_acme-challenge.<domain>.` (e.g. `_acme-challenge.example.com.`).
+3. **Check for the token** — scans the returned TXT records for an exact match with the domain's `verification_token`.
+4. **Advance status** — if the token is found, sets `status` to `verified` and records the current UTC time as `verified_at`.
+
+## Response — 200 OK
+
+<ResponseField name="id" type="string">
+  The unique identifier for this domain record.
+</ResponseField>
+
+<ResponseField name="domain_name" type="string">
+  The fully-qualified domain name that was verified.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Always `verified` in a successful response.
+</ResponseField>
+
+<ResponseField name="verified_at" type="string">
+  RFC3339 timestamp recording the exact moment verification succeeded, e.g. `"2024-06-01T10:15:32Z"`. Always present in a successful verify response.
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+  RFC3339 timestamp recording when the domain was first registered.
+</ResponseField>
+
+## Example
+
+### Request
+
+```bash
+curl -X POST https://api.example.com/domains/3f2a1b4c5d6e7f8a9b0c1d2e3f4a5b6c/verify
+```
+
+### Response
+
+```json
+{
+  "id": "3f2a1b4c5d6e7f8a9b0c1d2e3f4a5b6c",
+  "domain_name": "example.com",
+  "status": "verified",
+  "verified_at": "2024-06-01T10:15:32Z",
+  "created_at": "2024-06-01T10:00:00Z"
+}
+```
+
+## Error Cases
+
+| Status | Cause |
+|--------|-------|
+| `404 Not Found` | No domain record exists for the supplied `{id}`. |
+| `400 Bad Request` | The domain is not in `pending` status, or the DNS lookup succeeded but the verification token was not found among the returned TXT records. |
+| `424 Failed Dependency` | The DNS lookup itself failed — for example, the resolver could not reach the authoritative nameservers or returned a non-NXDOMAIN error. |
+
+<Warning>
+  The domain must be in `pending` status when this endpoint is called. Calling verify on a domain whose status is already `verified`, `certificate_pending`, `active`, or `failed` will return `400 Bad Request`. If you need to re-verify, contact support to reset the domain to `pending` status.
+</Warning>
+
+<Tip>
+  DNS propagation can take anywhere from a few seconds to 48 hours depending on your provider and the TTL of your zone. If you receive a `400` error indicating the token was not found, or a `424` error from a DNS resolution failure, wait a few minutes and retry — the record may not yet be visible to the resolver. You can check propagation independently using a tool like `dig TXT _acme-challenge.example.com.` before calling this endpoint.
+</Tip>

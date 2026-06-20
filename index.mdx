@@ -1,20 +1,56 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "DNS Handling: Domain Verification & TLS Certificate Automation"
+sidebarTitle: "Home"
+description: "DNS Handling is a Go service for managing custom domain ownership verification and automated TLS certificate issuance via ACME DNS-01 challenges."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+DNS Handling is a production-ready Go HTTP service that lets you register custom domains, verify ownership through DNS TXT records, and automatically issue TLS certificates using the ACME DNS-01 protocol (Let's Encrypt). It is designed to be self-hosted and integrated into any platform that needs to manage user-owned custom domains.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Register a domain and issue your first TLS certificate in minutes.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore every endpoint — request shapes, response fields, and error codes.
+  </Card>
+  <Card title="Domain Lifecycle" icon="arrow-progress" href="/concepts/domain-lifecycle">
+    Understand the five domain states and how transitions are triggered.
+  </Card>
+  <Card title="Deployment" icon="server" href="/deployment">
+    Run the service locally or in a container with Docker/Podman.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## How It Works
+
+<Steps>
+  <Step title="Register a domain">
+    `POST /domains` with a `domain_name`. The service returns a cryptographically secure verification token and instructions for the DNS TXT record to create.
+  </Step>
+  <Step title="Add the DNS TXT record">
+    Create a TXT record at `_acme-challenge.<your-domain>.` with the returned verification token. DNS propagation typically takes a few seconds to a few minutes.
+  </Step>
+  <Step title="Trigger verification">
+    `POST /domains/{id}/verify`. The service performs a live DNS lookup and confirms the token is present, marking the domain as `verified`.
+  </Step>
+  <Step title="Issue a TLS certificate">
+    `POST /domains/{id}/issue-certificate`. The service initiates an ACME DNS-01 order against Let's Encrypt. It polls DNS in the background and finalizes the order automatically when the challenge record is detected.
+  </Step>
+</Steps>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="DNS-01 Verification" icon="shield-check">
+    Ownership is proven via DNS TXT records — no HTTP challenge server needed.
+  </Card>
+  <Card title="Async Certificate Polling" icon="rotate">
+    Certificate issuance runs in the background with configurable poll interval and timeout.
+  </Card>
+  <Card title="LibSQL Database" icon="database">
+    Backed by LibSQL (Turso-compatible) with embedded, auto-applied SQL migrations.
+  </Card>
+  <Card title="Container Ready" icon="docker">
+    Ships with a Containerfile; CI publishes OCI images to GitHub Container Registry.
+  </Card>
+</CardGroup>

@@ -1,0 +1,66 @@
+---
+title: "DNS Handling: Custom Domain Verification and TLS Automation"
+sidebarTitle: "Introduction"
+description: "DNS Handling is a Go HTTP service that automates custom domain ownership verification and TLS certificate issuance via ACME DNS-01 challenges."
+---
+
+DNS Handling is a lightweight Go HTTP service designed for platforms that need to support custom domains. It automates the two most friction-heavy parts of that workflow: proving that a customer actually controls the domain they want to attach, and then obtaining a trusted TLS certificate for it — all without requiring any HTTP-based challenge infrastructure. Instead, the service relies entirely on DNS TXT records, making it compatible with any domain behind a CDN, load balancer, or proxy.
+
+## What the service does
+
+DNS Handling exposes a small REST API that orchestrates a well-defined pipeline for each domain:
+
+1. **Domain registration** — a caller submits a domain name, and the service generates a unique verification token and instructs the caller to publish it as a DNS TXT record at `_acme-challenge.<domain>.`
+2. **Ownership verification** — the service performs a live DNS TXT lookup and confirms the expected token is present before advancing the domain.
+3. **ACME certificate issuance** — once ownership is confirmed, the service opens an ACME order with Let's Encrypt using a DNS-01 challenge. It polls the `_acme-challenge` record in the background and completes the order automatically when the correct value is detected, then stores the issued certificate and private key.
+4. **Certificate retrieval** — the caller can fetch certificate metadata (issued/expiry timestamps) for any domain that has reached the `active` state.
+
+## Domain lifecycle states
+
+Every domain record moves through a strict state machine defined in `internal/domain/domain.go`. The five states are:
+
+| State | Meaning |
+|---|---|
+| `pending` | Domain registered; verification token generated, DNS record not yet confirmed. |
+| `verified` | Ownership verified via TXT record; ready for certificate issuance. |
+| `certificate_pending` | ACME order started; service is polling DNS for the challenge TXT record. |
+| `active` | Certificate successfully issued and stored. |
+| `failed` | A verification or ACME step failed, or the background poll timed out (default: 5 minutes). |
+
+State transitions are enforced server-side — for example, calling `issue-certificate` on a domain that is not yet `verified` returns a `400 Bad Request`.
+
+## Key technical choices
+
+| Concern | Choice |
+|---|---|
+| Language & runtime | Go 1.26 |
+| HTTP routing | [chi v5](https://github.com/go-chi/chi) with `Logger`, `Recoverer`, `RequestID`, and `RealIP` middleware |
+| Database | LibSQL / [Turso](https://turso.tech) (file-based SQLite by default via `file:./tls.db`) |
+| ACME client | [acmez v3](https://github.com/mholt/acmez) (DNS-01 only) |
+| Structured logging | [Zap](https://github.com/uber-go/zap) (production JSON mode; development mode when `LOG_LEVEL=debug`) |
+| Container build | Containerfile with a two-stage Alpine build; ships as `tls-server` |
+
+<Note>
+  The default `ACME_DIRECTORY` is the **Let's Encrypt staging endpoint**
+  (`https://acme-staging-v02.api.letsencrypt.org/directory`). Certificates issued
+  against staging are not trusted by browsers. Switch to
+  `https://acme-v02.api.letsencrypt.org/directory` only when you are ready for
+  production traffic.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Clone, configure, and run the service in under ten minutes.
+  </Card>
+  <Card title="Domain Lifecycle" icon="arrow-right-arrow-left" href="/concepts/domain-lifecycle">
+    Understand every state transition and error condition in detail.
+  </Card>
+  <Card title="API Overview" icon="code" href="/api/overview">
+    Full reference for every endpoint, request body, and response shape.
+  </Card>
+  <Card title="Deployment" icon="server" href="/deployment">
+    Build and run the service as a container with Docker or Podman.
+  </Card>
+</CardGroup>

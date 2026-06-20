@@ -1,0 +1,113 @@
+---
+title: "Database Setup and Schema Reference"
+sidebarTitle: "Database"
+description: "Overview of the LibSQL database backend used by DNS Handling, including connection modes, automatic migrations, and the full table schema."
+---
+
+DNS Handling uses LibSQL (compatible with Turso) as its database backend, with SQL migrations embedded directly in the binary. The database stores domain records, ACME account keys, in-flight certificate orders, DNS-01 challenge data, and issued certificates. No external migration tooling is required — migrations run automatically each time the service starts.
+
+## Database Driver
+
+The service uses the official LibSQL Go client:
+
+```
+github.com/tursodatabase/libsql-client-go/libsql
+```
+
+This driver is registered under the `"libsql"` name and is used via the standard `database/sql` interface, so it works transparently with both local SQLite files and remote Turso databases over the same LibSQL protocol.
+
+## Connection Modes
+
+Set the `DATABASE_URL` environment variable to select a connection mode. The default is a local SQLite file suitable for development.
+
+### Local File (SQLite)
+
+```bash
+DATABASE_URL=file:./tls.db
+```
+
+The database is stored as a single file on disk in the working directory. This mode requires no external services and is the recommended option for local development and single-node deployments.
+
+### Remote Turso
+
+```bash
+DATABASE_URL=libsql://<database-name>.turso.io?authToken=<token>
+```
+
+Replace `<database-name>` with your Turso database name and `<token>` with a valid database auth token. The service connects over the LibSQL wire protocol — no additional configuration is needed beyond the `DATABASE_URL`.
+
+## Migrations
+
+SQL migrations are embedded into the compiled binary at build time using Go's `//go:embed` directive. On startup, `db.Migrate()` reads every `.sql` file from the embedded `migrations/` directory, sorts them lexicographically by filename (e.g. `001_initial.sql`, `002_next.sql`, …), and executes each one against the database in order.
+
+All statements in the migration files use `CREATE TABLE IF NOT EXISTS`, making every migration idempotent. The service does not track a schema version table — it is safe to restart the service against an already-initialized database without side effects.
+
+## Schema
+
+The initial migration (`001_initial.sql`) creates five tables that cover the full lifecycle of domain verification and certificate issuance.
+
+```sql
+CREATE TABLE IF NOT EXISTS domains (
+    id TEXT PRIMARY KEY,
+    domain_name TEXT NOT NULL UNIQUE,
+    verification_token TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    verified_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS acme_accounts (
+    kid TEXT PRIMARY KEY,
+    private_key_pem TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS acme_orders (
+    id TEXT PRIMARY KEY,
+    domain_id TEXT NOT NULL REFERENCES domains(id),
+    order_url TEXT NOT NULL,
+    status TEXT NOT NULL,
+    expires_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS acme_challenges (
+    id TEXT PRIMARY KEY,
+    domain_id TEXT NOT NULL REFERENCES domains(id),
+    authorization_url TEXT NOT NULL,
+    challenge_url TEXT NOT NULL,
+    token TEXT NOT NULL,
+    key_authorization TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS certificates (
+    id TEXT PRIMARY KEY,
+    domain_id TEXT NOT NULL REFERENCES domains(id),
+    certificate_pem TEXT NOT NULL,
+    private_key_pem TEXT NOT NULL,
+    issued_at TIMESTAMP NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Table Reference
+
+| Table | Purpose |
+|---|---|
+| `domains` | Tracks every custom domain submitted to the service, its DNS verification token, and its current status (`pending`, `verified`, etc.). |
+| `acme_accounts` | Stores ACME account key pairs (PEM-encoded). Each account is identified by its Key ID (`kid`) returned by the CA on registration. |
+| `acme_orders` | Records active ACME certificate orders placed with the CA, linked to a domain. Includes the CA-assigned `order_url` and expiry time. |
+| `acme_challenges` | Holds DNS-01 challenge details for each authorization: the token, the computed `key_authorization` value that must appear in the DNS TXT record, and the current challenge status. |
+| `certificates` | Stores issued TLS certificates and their corresponding private keys (both PEM-encoded), along with issuance and expiry timestamps. |
+
+<Note>
+  Migrations run on **every startup** and are fully idempotent. Because every `CREATE TABLE` statement uses `IF NOT EXISTS`, re-running migrations against an existing database is safe and produces no errors. There is no migration version tracking table — the service simply replays all embedded SQL files on each boot.
+</Note>
+
+<Tip>
+  For production deployments, [Turso](https://turso.tech) is a strong choice. It offers a generous free tier, supports branching for staging environments, and speaks the same LibSQL protocol as a local SQLite file — no driver changes or schema adjustments required. Simply swap `DATABASE_URL` from `file:./tls.db` to your `libsql://` connection string.
+</Tip>

@@ -1,0 +1,112 @@
+---
+title: "Domain Lifecycle States in DNS Handling"
+sidebarTitle: "Domain Lifecycle"
+description: "Understand the five domain states — pending, verified, certificate_pending, active, and failed — and the API calls that drive each transition."
+---
+
+DNS Handling uses a state machine to track every registered domain as it moves through ownership verification and TLS certificate issuance. Each domain always holds exactly one of five statuses, and the service enforces which transitions are legal, so requests that arrive out of order are rejected before any side effects occur.
+
+## Status definitions
+
+| Status | Meaning |
+|---|---|
+| `pending` | Domain has been registered and a unique verification token has been generated. The domain is waiting for the owner to publish a DNS TXT record. |
+| `verified` | The DNS TXT record was found and matched the stored verification token. Domain ownership is confirmed. |
+| `certificate_pending` | An ACME order has been started and a background goroutine is polling DNS for the ACME DNS-01 challenge record. |
+| `active` | The ACME challenge succeeded, a certificate was issued, and both the certificate PEM and private key PEM have been stored. The domain is fully operational. |
+| `failed` | The background ACME polling goroutine timed out before finding the challenge record, or certificate issuance itself failed after the record was found. |
+
+## Go type definitions
+
+The five statuses are defined as typed string constants in `internal/domain/domain.go`:
+
+```go
+type Status string
+
+const (
+    StatusPending            Status = "pending"
+    StatusVerified           Status = "verified"
+    StatusCertificatePending Status = "certificate_pending"
+    StatusActive             Status = "active"
+    StatusFailed             Status = "failed"
+)
+```
+
+The `Domain` struct that carries this status through the system is:
+
+```go
+type Domain struct {
+    ID                string     `json:"id"`
+    DomainName        string     `json:"domain_name"`
+    VerificationToken string     `json:"verification_token"`
+    Status            Status     `json:"status"`
+    VerifiedAt        *time.Time `json:"verified_at,omitempty"`
+    CreatedAt         time.Time  `json:"created_at"`
+    UpdatedAt         time.Time  `json:"updated_at"`
+}
+```
+
+## State transition diagram
+
+```
+POST /domains
+      │
+      ▼
+  [pending]
+      │
+      │  POST /domains/{id}/verify
+      │  (TXT record found and matched)
+      ▼
+  [verified]
+      │
+      │  POST /domains/{id}/issue-certificate
+      │  (ACME order created, background poll started)
+      ▼
+  [certificate_pending]
+      │
+      ├─── TXT record found + ACME order completes ──▶ [active]
+      │
+      └─── Poll timeout (5 min) or ACME error      ──▶ [failed]
+```
+
+## What triggers each transition
+
+<Steps>
+  <Step title="pending → (domain created)">
+    **API call:** `POST /domains`
+
+    The `CreateDomain` handler calls `domainSvc.Create()`, which generates a fresh verification token and persists the domain with `status = "pending"`. The response includes the `verification_token` and a human-readable `instructions` string telling the caller which TXT record to create.
+  </Step>
+
+  <Step title="pending → verified">
+    **API call:** `POST /domains/{id}/verify`
+
+    The `VerifyDomain` handler looks up TXT records for `_acme-challenge.<domain>.` using the DNS resolver, then calls `domainSvc.VerifyTXT()`. That method enforces that the current status is `pending` before checking whether any returned record matches `verification_token`. On a match, it sets `status = "verified"` and records the current UTC time in `verified_at`.
+  </Step>
+
+  <Step title="verified → certificate_pending">
+    **API call:** `POST /domains/{id}/issue-certificate`
+
+    The `IssueCertificate` handler enforces that `status == "verified"` before proceeding. After setting up the ACME account and creating an order with `StartOrder`, it calls `domainSvc.SetCertificatePending()`, which enforces a `verified` pre-condition before writing `status = "certificate_pending"`. A background goroutine is then launched to poll for the ACME challenge record.
+  </Step>
+
+  <Step title="certificate_pending → active">
+    **Background goroutine (no direct API call)**
+
+    When the polling goroutine detects the expected TXT value at `_acme-challenge.<domain>.`, it calls `acmeProv.CompleteOrder()` to finalize the ACME challenge and obtain the certificate. The certificate PEM and private key PEM are stored via `certSvc.Store()`, and then `domainSvc.SetActive()` writes `status = "active"`.
+  </Step>
+
+  <Step title="certificate_pending → failed">
+    **Background goroutine (no direct API call)**
+
+    If the polling context times out after 5 minutes without finding the expected TXT record, or if `CompleteOrder` or `certSvc.Store` return an error, the goroutine calls `domainSvc.SetFailed()`, which writes `status = "failed"`.
+  </Step>
+</Steps>
+
+<Note>
+  The `verified_at` field is a nullable pointer (`*time.Time`) and is only populated during the `pending → verified` transition. For domains in any other status, the field is omitted from JSON responses entirely because of the `omitempty` tag.
+</Note>
+
+<Warning>
+  Once a domain reaches `failed` status there is no retry or reset endpoint. The domain must be re-registered by calling `POST /domains` with the same domain name, which creates a brand-new record with a fresh verification token. Any previously issued ACME order associated with the failed domain is abandoned.
+</Warning>

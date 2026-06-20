@@ -1,47 +1,197 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with DNS Handling"
+sidebarTitle: "Quickstart"
+description: "Register a custom domain, verify ownership with a DNS TXT record, and issue a TLS certificate end-to-end using the DNS Handling API in minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
-
-<Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
-
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
-
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
-
-    ```bash
-    your-cli start
-    ```
-  </Step>
-</Steps>
+This guide walks you through running the DNS Handling service locally and taking a domain through its complete lifecycle: registration, ownership verification, certificate issuance, and retrieval. By the end you will have a running server, a verified domain, and a stored certificate record.
 
 <Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+  The service defaults to the **Let's Encrypt staging** ACME directory, so you can
+  complete this entire flow — including real ACME orders — without consuming your
+  production rate-limit quota. Staging certificates are not browser-trusted; swap
+  `ACME_DIRECTORY` to the production URL when you are ready.
 </Tip>
+
+<Steps>
+  <Step title="Prerequisites">
+    Before you begin, make sure you have the following:
+
+    - **Go 1.26 or later** installed and `go` available on your `PATH`.
+    - A **LibSQL-compatible database** or file-based SQLite (the default `file:./tls.db` requires no extra setup).
+    - A **real domain name** whose DNS you can edit — the service performs live TXT lookups, so a domain that only exists locally will not work.
+    - An **email address** to register with the ACME provider (used for expiry notifications).
+  </Step>
+
+  <Step title="Clone and build">
+    Clone the repository and compile the server binary:
+
+    ```bash
+    git clone https://github.com/plutoploy/dns-handling
+    cd dns-handling
+    go build -o tls-server ./cmd/server
+    ```
+
+    The compiled binary is placed at `./tls-server` in the project root.
+  </Step>
+
+  <Step title="Configure environment">
+    Copy `.env.example` and fill in your values:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    ```bash
+    # .env
+
+    # Path to a LibSQL/SQLite database file, or a Turso remote URL.
+    # Defaults to a local file if not set.
+    DATABASE_URL=file:./tls.db
+
+    # Email address sent to the ACME provider on account registration.
+    ACME_EMAIL=you@example.com
+
+    # ACME directory URL. Default is Let's Encrypt staging.
+    # Change to https://acme-v02.api.letsencrypt.org/directory for production.
+    ACME_DIRECTORY=https://acme-staging-v02.api.letsencrypt.org/directory
+
+    # Address and port the HTTP server binds to.
+    SERVER_ADDR=:8080
+
+    # Log verbosity: "info" (default) or "debug" for development output.
+    LOG_LEVEL=info
+    ```
+
+    The service reads all configuration from environment variables at startup via `config.Load()`. Every variable has a sensible default, so you only need to override what differs from the defaults shown above.
+  </Step>
+
+  <Step title="Run the server">
+    Export the variables and start the binary:
+
+    ```bash
+    export $(grep -v '^#' .env | xargs)
+    ./tls-server
+    ```
+
+    You should see structured JSON log output similar to:
+
+    ```json
+    {"level":"info","msg":"starting tls service","addr":":8080","db":"file:./tls.db"}
+    {"level":"info","msg":"listening","addr":":8080"}
+    ```
+
+    The service is ready to accept requests once the `listening` log line appears. It binds to `:8080` by default.
+  </Step>
+
+  <Step title="Register a domain">
+    Submit the domain name you want to manage. The service creates a record in status `pending` and returns a unique `verification_token`:
+
+    ```bash
+    curl -X POST http://localhost:8080/domains \
+      -H 'Content-Type: application/json' \
+      -d '{"domain_name": "example.com"}'
+    ```
+
+    **Response** (`201 Created`):
+
+    ```json
+    {
+      "id": "3f2a1b4c8d9e0f1a2b3c4d5e6f7a8b9c",
+      "domain_name": "example.com",
+      "verification_token": "a3f1e2b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2",
+      "status": "pending",
+      "instructions": "Create a TXT record for _acme-challenge.example.com. with value: a3f1e2b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2"
+    }
+    ```
+
+    Save the `id` — you will need it for every subsequent request against this domain.
+  </Step>
+
+  <Step title="Create the DNS TXT record">
+    Log in to your DNS provider and add a TXT record exactly as instructed in the `instructions` field:
+
+    | Field | Value |
+    |---|---|
+    | **Type** | `TXT` |
+    | **Host / Name** | `_acme-challenge.example.com.` (or `_acme-challenge` if your provider appends the zone automatically) |
+    | **Value** | The `verification_token` string from the previous response |
+    | **TTL** | 60 seconds (lower is better for faster propagation) |
+
+    DNS changes can take anywhere from a few seconds to several minutes to propagate. You can check propagation with:
+
+    ```bash
+    dig TXT _acme-challenge.example.com. +short
+    ```
+  </Step>
+
+  <Step title="Verify domain ownership">
+    Once the TXT record is live, trigger the verification check. The server performs a live DNS TXT lookup and, if the token matches, advances the domain to `verified`:
+
+    ```bash
+    curl -X POST http://localhost:8080/domains/3f2a1b4c8d9e0f1a2b3c4d5e6f7a8b9c/verify
+    ```
+
+    **Response** (`200 OK`):
+
+    ```json
+    {
+      "id": "3f2a1b4c8d9e0f1a2b3c4d5e6f7a8b9c",
+      "domain_name": "example.com",
+      "status": "verified",
+      "verified_at": "2025-01-15T10:30:00Z",
+      "created_at": "2025-01-15T10:25:00Z"
+    }
+    ```
+
+    <Warning>
+      The domain **must be in `verified` status** before you can issue a certificate. Calling `issue-certificate` on a `pending` domain returns `400 Bad Request` with `"domain must be verified first"`.
+    </Warning>
+  </Step>
+
+  <Step title="Issue a certificate">
+    Initiate an ACME DNS-01 order. The service registers or reuses an ACME account, opens an order with the configured ACME directory, and immediately returns while a background goroutine polls DNS every 10 seconds (timeout: 5 minutes):
+
+    ```bash
+    curl -X POST http://localhost:8080/domains/3f2a1b4c8d9e0f1a2b3c4d5e6f7a8b9c/issue-certificate
+    ```
+
+    **Response** (`202 Accepted`):
+
+    ```json
+    {
+      "order_id": "7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f",
+      "status": "certificate_pending",
+      "challenge_domain": "_acme-challenge.example.com.",
+      "expected_txt_value": "xyz123acme-challenge-value-from-lets-encrypt",
+      "instructions": "Update the TXT record for _acme-challenge.example.com. to: xyz123acme-challenge-value-from-lets-encrypt"
+    }
+    ```
+
+    Update (or create) the `_acme-challenge.example.com.` TXT record with the `expected_txt_value` shown in this response. This is a different value from the verification token — it is the ACME key authorisation value specific to this certificate order.
+
+    The background poller detects the record, calls back to Let's Encrypt to complete the challenge, stores the issued certificate and private key, and moves the domain to `active`. Watch the server logs for `"acme dns-01 record found"` and `"certificate issued"`.
+  </Step>
+
+  <Step title="Retrieve the certificate">
+    Once the domain reaches `active` status, fetch the certificate metadata:
+
+    ```bash
+    curl http://localhost:8080/domains/3f2a1b4c8d9e0f1a2b3c4d5e6f7a8b9c/certificate
+    ```
+
+    **Response** (`200 OK`):
+
+    ```json
+    {
+      "id": "9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b",
+      "domain_id": "3f2a1b4c8d9e0f1a2b3c4d5e6f7a8b9c",
+      "issued_at": "2025-01-15T10:35:00Z",
+      "expires_at": "2025-04-15T10:35:00Z",
+      "created_at": "2025-01-15T10:35:01Z"
+    }
+    ```
+
+    If the domain is not yet `active`, the endpoint returns `404` with `"no certificate issued yet"`. Poll `GET /domains/{id}` to check current status before retrying.
+  </Step>
+</Steps>

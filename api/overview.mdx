@@ -1,0 +1,105 @@
+---
+title: "DNS Handling REST API Overview"
+sidebarTitle: "Overview"
+description: "JSON REST API for domain verification and TLS certificate issuance via ACME DNS-01. Base URL http://localhost:8080. All endpoints accept and return application/json."
+---
+
+DNS Handling exposes a JSON REST API over HTTP for managing custom domain verification and automated TLS certificate issuance via ACME DNS-01 challenges. All endpoints accept and return `application/json`. The API is intentionally minimal — it models a linear domain lifecycle from registration through DNS verification to certificate issuance, with each stage gated on the previous one completing successfully.
+
+## Base URL
+
+The server binds to `:8080` by default, making the base URL:
+
+```
+http://localhost:8080
+```
+
+To change the bind address, set the `SERVER_ADDR` environment variable before starting the service:
+
+```bash
+SERVER_ADDR=:9090 ./dns-handling
+```
+
+## Authentication
+
+This service has no authentication layer. It is designed to run as an internal component, not exposed to the public internet.
+
+<Warning>
+  Deploy the DNS Handling service behind a network boundary or reverse proxy. Any caller with network access can register domains and trigger certificate issuance. Do not expose this service's port directly to the internet.
+</Warning>
+
+## Content-Type
+
+All requests that include a body **must** set the `Content-Type` header to `application/json`. All responses are JSON regardless of status code.
+
+```http
+Content-Type: application/json
+```
+
+## Request IDs
+
+The chi router applies the `middleware.RequestID` middleware to every request. Each response carries an `X-Request-Id` header that can be used to correlate log entries with API calls.
+
+```http
+X-Request-Id: abc123def456
+```
+
+## Error Format
+
+All error responses share a consistent JSON envelope with a single `error` field and an appropriate HTTP status code.
+
+```json
+{
+  "error": "domain must be verified first, current status: pending"
+}
+```
+
+Common status codes returned by the API:
+
+| Status Code | Meaning |
+|---|---|
+| `400 Bad Request` | Invalid request body or a precondition not met (e.g. domain not yet verified) |
+| `404 Not Found` | Domain or certificate does not exist |
+| `424 Failed Dependency` | DNS lookup failed when attempting verification |
+| `500 Internal Server Error` | Unexpected server-side failure |
+
+## Endpoints
+
+The API is organised around two resources — **Domains** and **Certificates** — all nested under the `/domains` prefix.
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/domains` | Register a new domain and obtain a verification token |
+| `GET` | `/domains/{id}` | Retrieve current domain status |
+| `POST` | `/domains/{id}/verify` | Trigger DNS TXT record verification |
+| `POST` | `/domains/{id}/issue-certificate` | Start ACME DNS-01 certificate issuance |
+| `GET` | `/domains/{id}/certificate` | Retrieve certificate metadata |
+
+<CardGroup cols={2}>
+  <Card title="Domains" icon="globe" href="/api/domains/create-domain">
+    Register domains, check verification status, and trigger DNS TXT record verification. A domain must reach `verified` status before certificate issuance can begin.
+  </Card>
+  <Card title="Certificates" icon="lock" href="/api/certificates/issue-certificate">
+    Initiate ACME DNS-01 certificate orders and retrieve certificate metadata once issuance completes asynchronously in the background.
+  </Card>
+</CardGroup>
+
+## Domain Status Lifecycle
+
+Every domain moves through a well-defined set of statuses. Transitions are strictly ordered — no step can be skipped.
+
+| Status | Description |
+|---|---|
+| `pending` | Domain has been registered; DNS TXT record not yet verified |
+| `verified` | DNS TXT record confirmed; domain is eligible for certificate issuance |
+| `certificate_pending` | ACME DNS-01 order has been started; polling for TXT record propagation |
+| `active` | Certificate successfully issued and stored |
+| `failed` | ACME polling timed out or the certificate order could not be completed |
+
+<Tip>
+  Poll `GET /domains/{id}` to watch for status transitions after calling `POST /domains/{id}/verify` or `POST /domains/{id}/issue-certificate`. The ACME polling loop runs in the background with a configurable interval (`POLL_INTERVAL`, default 10 s) and a total timeout (`POLL_TIMEOUT`, default 5 min).
+</Tip>
+
+<Note>
+  Certificate PEM and private key PEM are stored in the database after a successful ACME order but are **not** returned by any API endpoint. `GET /domains/{id}/certificate` exposes metadata only — `id`, `domain_id`, `issued_at`, `expires_at`, and `created_at`. Retrieve the raw PEM material directly from the database if needed.
+</Note>

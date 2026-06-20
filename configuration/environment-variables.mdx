@@ -1,0 +1,84 @@
+---
+title: "Environment Variable Configuration Reference"
+sidebarTitle: "Environment Variables"
+description: "Complete reference for all environment variables used to configure DNS Handling, covering database, ACME, server, and logging settings."
+---
+
+DNS Handling is configured entirely through environment variables, with sensible defaults for local development. Copy `.env.example` to `.env`, adjust the values for your environment, and the service will pick them up at startup via `config.Load()`.
+
+## Variables
+
+<ParamField query="DATABASE_URL" default="file:./tls.db">
+  LibSQL/SQLite connection string. Use `file:./path.db` for a local file-based SQLite database, or a Turso `libsql://` URL for a remote managed database.
+
+  **Examples:**
+  - `file:./tls.db` — local SQLite file in the working directory
+  - `libsql://<database-name>.turso.io?authToken=<token>` — remote Turso instance
+</ParamField>
+
+<ParamField query="ACME_EMAIL" default="admin@example.com">
+  Contact email address registered with the ACME certificate authority. This address is used during ACME account creation and may receive renewal failure notifications from Let's Encrypt.
+</ParamField>
+
+<ParamField query="ACME_DIRECTORY" default="https://acme-staging-v02.api.letsencrypt.org/directory">
+  ACME directory URL that points to the certificate authority's API. The default is the Let's Encrypt **staging** environment, which issues untrusted certificates suitable for testing without hitting production rate limits.
+
+  **Known values:**
+  - `https://acme-staging-v02.api.letsencrypt.org/directory` — Let's Encrypt staging *(default)*
+  - `https://acme-v02.api.letsencrypt.org/directory` — Let's Encrypt production
+</ParamField>
+
+<ParamField query="SERVER_ADDR" default=":8080">
+  TCP address the HTTP server listens on. Follows Go's `net.Listen` format: `[host]:port`. Omitting the host binds to all interfaces.
+
+  **Examples:**
+  - `:8080` — all interfaces, port 8080
+  - `127.0.0.1:9000` — localhost only, port 9000
+</ParamField>
+
+<ParamField query="LOG_LEVEL" default="info">
+  Logging verbosity level. Accepted values are `info` and `debug`. Setting `debug` switches to development-mode logging with pretty-printed output and caller information.
+</ParamField>
+
+## Hardcoded Timing Constants
+
+The following timing parameters are set directly in `internal/config/config.go` and are **not** configurable via environment variables:
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `DNS_TIMEOUT` | `10s` | Timeout for individual DNS lookup operations |
+| `POLL_INTERVAL` | `10s` | Interval between ACME challenge status poll attempts |
+| `POLL_TIMEOUT` | `5m` | Maximum total time to wait for an ACME challenge to complete |
+
+## Example .env File
+
+The `.env.example` file in the repository root provides a ready-to-copy template with all configurable variables:
+
+```bash
+# Database
+DATABASE_URL=file:./tls.db
+
+# ACME
+ACME_EMAIL=admin@example.com
+ACME_DIRECTORY=https://acme-staging-v02.api.letsencrypt.org/directory
+
+# Server
+SERVER_ADDR=:8080
+
+# Logging
+LOG_LEVEL=info
+```
+
+<Warning>
+  Before deploying to production, change `ACME_DIRECTORY` to the Let's Encrypt production endpoint:
+
+  ```
+  ACME_DIRECTORY=https://acme-v02.api.letsencrypt.org/directory
+  ```
+
+  The default staging URL issues certificates that are **not trusted by browsers or clients**. Rate limits are also more lenient on staging, so keep the default while iterating during development.
+</Warning>
+
+<Tip>
+  Setting `LOG_LEVEL=debug` switches the logger to `zap.NewDevelopment()`, which enables pretty-printed, human-readable log output with file and line caller information. This is particularly useful when tracing the ACME DNS-01 challenge flow locally. Leave `LOG_LEVEL=info` (the default) in production to use the structured JSON logger from `zap.NewProduction()`.
+</Tip>
