@@ -97,7 +97,7 @@ Every domain moves through a well-defined set of statuses. Transitions are stric
 | `failed` | ACME polling timed out or the certificate order could not be completed |
 
 <Tip>
-  Poll `GET /domains/{id}` to watch for status transitions after calling `POST /domains/{id}/verify` or `POST /domains/{id}/issue-certificate`. The ACME polling loop runs in the background with a configurable interval (`POLL_INTERVAL`, default 10 s) and a total timeout (`POLL_TIMEOUT`, default 5 min).
+  Poll `GET /domains/{id}` to watch for status transitions after calling `POST /domains/{id}/verify` or `POST /domains/{id}/issue-certificate`. The ACME polling loop runs in the background with a fixed interval of 10 seconds and a total timeout of 5 minutes, after which the domain moves to `failed` if the certificate has not been issued.
 </Tip>
 
 <Note>

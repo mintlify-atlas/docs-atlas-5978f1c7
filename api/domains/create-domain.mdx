@@ -45,7 +45,7 @@ POST /domains
 ### Request
 
 ```bash
-curl -X POST https://api.example.com/domains \
+curl -X POST http://localhost:8080/domains \
   -H "Content-Type: application/json" \
   -d '{"domain_name": "example.com"}'
 ```
@@ -56,9 +56,9 @@ curl -X POST https://api.example.com/domains \
 {
   "id": "3f2a1b4c5d6e7f8a9b0c1d2e3f4a5b6c",
   "domain_name": "example.com",
-  "verification_token": "a3f1d2c4e5b6789012345678abcdef01234567890abcdef01234567890abcdef0",
+  "verification_token": "a3f1d2c4e5b6789012345678abcdef0123456789abcdef0123456789abcdef01",
   "status": "pending",
-  "instructions": "Create a TXT record for _acme-challenge.example.com. with value: a3f1d2c4e5b6789012345678abcdef01234567890abcdef01234567890abcdef0"
+  "instructions": "Create a TXT record for _acme-challenge.example.com. with value: a3f1d2c4e5b6789012345678abcdef0123456789abcdef0123456789abcdef01"
 }
 ```
 

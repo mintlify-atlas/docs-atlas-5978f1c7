@@ -1,6 +1,6 @@
 ---
-title: "GET /domains/{id}/certificate — Retrieve Certificate Metadata"
-sidebarTitle: "GET /{id}/certificate"
+title: "GET /domains/{id}/certificate — Retrieve TLS Certificate"
+sidebarTitle: "Get Certificate"
 description: "Retrieve certificate metadata for an active domain, including issuance and expiry timestamps. Only available once the domain status has reached `active`."
 ---
 
@@ -33,7 +33,7 @@ GET /domains/{id}/certificate
 </ResponseField>
 
 <ResponseField name="expires_at" type="string">
-  RFC3339 timestamp recording when the certificate will expire. Let's Encrypt certificates are valid for approximately 90 days from issuance, so this will typically be `issued_at` plus 90 days.
+  RFC3339 timestamp recording when the certificate will expire. Computed by `CompleteOrder()` in `acme.go` as exactly `issued_at + 90 * 24 hours` (`issuedAt.Add(90 * 24 * time.Hour)`), regardless of the ACME provider's own validity period.
 </ResponseField>
 
 <ResponseField name="created_at" type="string">
@@ -63,7 +63,7 @@ curl https://api.example.com/domains/a3f1c2d4e5b6789012345678abcdef01/certificat
 </Note>
 
 <Warning>
-  Let's Encrypt certificates expire **90 days** after issuance. Monitor the `expires_at` field and re-issue before it is reached by calling `POST /domains/{id}/issue-certificate` again. Note that the domain's status must be `verified` to start a new issuance — if the domain status has since changed (for example, it was set to `failed` during a prior attempt), it will need to be re-verified before a new certificate can be requested.
+  Certificates expire **exactly 90 days** after issuance — `expires_at` is set to `issued_at + 90 * 24 hours` by `CompleteOrder()` in `acme.go`. Monitor the `expires_at` field and re-issue before it is reached by calling `POST /domains/{id}/issue-certificate` again. Note that the domain's status must be `verified` to start a new issuance — if the domain status has since changed (for example, it was set to `failed` during a prior attempt), it will need to be re-verified before a new certificate can be requested.
 </Warning>
 
 ## Error Responses

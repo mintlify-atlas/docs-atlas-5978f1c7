@@ -1,10 +1,10 @@
 ---
-title: "ACME DNS-01 Certificate Issuance Flow"
+title: "ACME DNS-01: Automated TLS Certificate Issuance Flow"
 sidebarTitle: "ACME DNS-01"
-description: "Explore how DNS Handling implements RFC 8555 ACME DNS-01 challenges with the acmez library to automatically issue TLS certificates from Let's Encrypt."
+description: "Explore how DNS Handling implements RFC 8555 ACME DNS-01 challenges with the acmez/v3 library to automatically issue TLS certificates from Let's Encrypt."
 ---
 
-DNS Handling implements the ACME protocol (RFC 8555) DNS-01 challenge type using the [`acmez`](https://github.com/mholt/acmez) library to automatically issue TLS certificates from Let's Encrypt or any compatible ACME certificate authority. The process is entirely asynchronous: the API returns immediately after starting an order and a background goroutine handles the polling, challenge completion, and certificate storage without blocking the caller.
+DNS Handling implements the ACME protocol (RFC 8555) DNS-01 challenge type using the [`acmez/v3`](https://github.com/mholt/acmez/v3) library to automatically issue TLS certificates from Let's Encrypt or any compatible ACME certificate authority. The process is entirely asynchronous: the API returns immediately after starting an order and a background goroutine handles the polling, challenge completion, and certificate storage without blocking the caller.
 
 ## Key data structures
 
@@ -33,7 +33,7 @@ type Challenge struct {
 }
 ```
 
-`Challenge.TXTValue` is the value that must appear in DNS — it is computed by `acmez` via `dnsChallenge.DNS01KeyAuthorization()` and is distinct from the domain ownership verification token used in the earlier `pending → verified` step.
+`Challenge.TXTValue` is the value that must appear in DNS — it is computed by `acmez/v3` via `dnsChallenge.DNS01KeyAuthorization()` and is distinct from the domain ownership verification token used in the earlier `pending → verified` step.
 
 ## Full issuance flow
 
@@ -61,7 +61,7 @@ The entire flow is triggered by a single API call: `POST /domains/{id}/issue-cer
   <Step title="StartOrder — create the ACME order and extract the DNS-01 challenge">
     `acmeProv.StartOrder()` creates a new ACME order identifying the target domain, fetches the first authorization object, and iterates over the authorization's challenges to find the one with `type == "dns-01"`.
 
-    The required DNS TXT value is then computed from the challenge token and the account key using `acmez`:
+    The required DNS TXT value is then computed from the challenge token and the account key using `acmez/v3`:
 
     ```go
     txtValue := dnsChallenge.DNS01KeyAuthorization()
@@ -171,7 +171,7 @@ curl http://localhost:8080/domains/{id}/certificate
 ```
 
 <Warning>
-  The `expected_txt_value` returned by `POST /domains/{id}/issue-certificate` is **not** the same as the `verification_token` used during domain ownership verification. The ACME DNS-01 TXT value is computed by `acmez` from the challenge token and the ACME account key (`DNS01KeyAuthorization()`), and will be a different string. You must update your DNS TXT record at `_acme-challenge.<domain>.` with this new value after calling the issue-certificate endpoint — leaving the old ownership-verification token in place will cause polling to time out and the domain to move to `failed`.
+  The `expected_txt_value` returned by `POST /domains/{id}/issue-certificate` is **not** the same as the `verification_token` used during domain ownership verification. The ACME DNS-01 TXT value is computed by `acmez/v3` from the challenge token and the ACME account key (`DNS01KeyAuthorization()`), and will be a different string. You must update your DNS TXT record at `_acme-challenge.<domain>.` with this new value after calling the issue-certificate endpoint — leaving the old ownership-verification token in place will cause polling to time out and the domain to move to `failed`.
 </Warning>
 
 <Note>

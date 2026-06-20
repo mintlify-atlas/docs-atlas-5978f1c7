@@ -1,7 +1,7 @@
 ---
 title: "DNS Handling: Custom Domain Verification and TLS Automation"
 sidebarTitle: "Introduction"
-description: "DNS Handling is a Go HTTP service that automates custom domain ownership verification and TLS certificate issuance via ACME DNS-01 challenges."
+description: "DNS Handling automates custom domain ownership verification and TLS certificate issuance via ACME DNS-01 challenges, relying entirely on DNS TXT records."
 ---
 
 DNS Handling is a lightweight Go HTTP service designed for platforms that need to support custom domains. It automates the two most friction-heavy parts of that workflow: proving that a customer actually controls the domain they want to attach, and then obtaining a trusted TLS certificate for it — all without requiring any HTTP-based challenge infrastructure. Instead, the service relies entirely on DNS TXT records, making it compatible with any domain behind a CDN, load balancer, or proxy.
@@ -53,12 +53,6 @@ State transitions are enforced server-side — for example, calling `issue-certi
 <CardGroup cols={2}>
   <Card title="Quickstart" icon="rocket" href="/quickstart">
     Clone, configure, and run the service in under ten minutes.
-  </Card>
-  <Card title="Domain Lifecycle" icon="arrow-right-arrow-left" href="/concepts/domain-lifecycle">
-    Understand every state transition and error condition in detail.
-  </Card>
-  <Card title="API Overview" icon="code" href="/api/overview">
-    Full reference for every endpoint, request body, and response shape.
   </Card>
   <Card title="Deployment" icon="server" href="/deployment">
     Build and run the service as a container with Docker or Podman.

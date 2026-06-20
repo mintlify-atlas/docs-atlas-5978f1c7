@@ -26,10 +26,10 @@ No request body is required or accepted for this endpoint.
 
 When this endpoint is called the service performs the following steps in order:
 
-1. **Look up the domain record** — retrieves the domain by `{id}` and confirms it exists and is in `pending` status.
-2. **Resolve TXT records** — performs a live DNS lookup for TXT records at `_acme-challenge.<domain>.` (e.g. `_acme-challenge.example.com.`).
-3. **Check for the token** — scans the returned TXT records for an exact match with the domain's `verification_token`.
-4. **Advance status** — if the token is found, sets `status` to `verified` and records the current UTC time as `verified_at`.
+1. **Look up the domain record** — retrieves the domain by `{id}`; returns `404` if it does not exist.
+2. **Resolve TXT records** — performs a live DNS lookup for TXT records at `_acme-challenge.<domain>.` (e.g. `_acme-challenge.example.com.`); returns `424` if the lookup fails.
+3. **Check status and token** — confirms the domain is in `pending` status and scans the returned TXT records for an exact match with the domain's `verification_token`; returns `400` if either check fails.
+4. **Advance status** — sets `status` to `verified` and records the current UTC time as `verified_at`.
 
 ## Response — 200 OK
 
@@ -58,7 +58,7 @@ When this endpoint is called the service performs the following steps in order:
 ### Request
 
 ```bash
-curl -X POST https://api.example.com/domains/3f2a1b4c5d6e7f8a9b0c1d2e3f4a5b6c/verify
+curl -X POST http://localhost:8080/domains/3f2a1b4c5d6e7f8a9b0c1d2e3f4a5b6c/verify
 ```
 
 ### Response
